@@ -1,4 +1,4 @@
-@export Pb(m::AbstractLedger) = m[Pb][1].pb
+@export Pb(m::AbstractLedger) = m[Pb][1].pb::Float64
 
 @export H_magnitudes(ls::Vector{<:AbstractLedger}) = map(x -> singleton(x, H).magnitude, ls)
 @export H_vecs(ls::Vector{<:AbstractLedger}) = map(x -> singleton(x, H).v, ls)
@@ -13,7 +13,7 @@
 
 @export spins(ls::Vector{<:AbstractLedger}, i) = map(x->x[Spin][i].v, ls)
 
-@export Pb(ls::Vector{<:AbstractLedger}) = map(Pb, ls)
+@export Pb(ls::Vector{<:AbstractLedger}) = [m[Pb][1].pb for m in ls]
 
 @export Etot(ls::Vector{<:AbstractLedger}, esym=:E_all) = map(x->calc_etot(x, esym).e, ls)
 
@@ -56,18 +56,20 @@ M_L(l::Ledger) = M_L(l, 1,2)
 @export J_parallel(l::Ledger)      = J_parallel(singleton(l, Model))
 @export J_perpendicular(l::Ledger) = J_perpendicular(singleton(l, Model))
 
-@export function all_angles!(angle_vector::AbstractVector{Float64}, l::AbstractLedger)
-    for i=1:10:length(angle_vector)
-        for j = 0:7
-            angle_vector[i+j] = l[Spin].data[i+j].ϕ
+@export function all_angles!(angle_vector::AbstractVector{Float64}, m::AbstractLedger)
+    for (i, e) in enumerate(@entities_in(m[Optimize]))
+        @inbounds if e ∈ m[Spin]
+            angle_vector[i] = m[Spin][e].ϕ
+        elseif e ∈ m[L]
+            angle_vector[i] = m[L][e].ϕ
+        else
+            angle_vector[i] = m[Pb][e].pb
         end
-        angle_vector[i+8] = l[L].data[div(i,10)+1].ϕ
-        angle_vector[i+9] = l[L].data[div(i,10)+2].ϕ
     end
     return angle_vector
 end
 
-@export all_angles(l::AbstractLedger) = all_angles!(zeros(length(l[Spin])+length(l[L])), l)
+@export all_angles(l::AbstractLedger) = all_angles!(zeros(length(l[Optimize])), l)
 
 @export function set_all_angles!(l::AbstractLedger, angles)
     for i=1:10:length(angles)
@@ -246,8 +248,8 @@ function Overseer.Ledger(p::Model)
                Stage(:E_L, [E_LL(), E_L_H(), E_L_easy()]),
                Stage(:E_Gd_L, [E_Gd_L()]),
                Stage(:E_all, [E_Gd_H(), E_L_H(), E_LL(), E_L_easy(), E_Gd_easy(), E_Gd_L(), E_Dipole(), E_L2H2(), E_Pb()]),
-               Stage(:E_dipole, [E_Dipole()]),
-               Stage(:Visualization, [SpinUpdater(), Visualizer()]))
+               Stage(:E_no_Pb, [E_Gd_H(), E_L_H(), E_LL(), E_L_easy(), E_Gd_easy(), E_Gd_L(), E_Dipole(), E_L2H2()]),
+               Stage(:E_dipole, [E_Dipole()]))
 
     a = Vec3(7.353099822998047, 0.0, 0)
     b = Vec3(0.0, 8.537099794497102, 0)
@@ -285,8 +287,7 @@ end
                Stage(:E_L, [E_LL(), E_L_H(), E_L_easy()]),
                Stage(:E_Gd_L, [E_Gd_L()]),
                Stage(:E_all, [E_Gd_H(), E_Gd_easy(), E_Dipole(), E_Gd_easy4th(), E_Pb_J(),E_J()]),
-               Stage(:E_dipole, [E_Dipole()]),
-               Stage(:Visualization, [SpinUpdater(), Visualizer()]))
+               Stage(:E_dipole, [E_Dipole()]))
 
     a = Vec3(7.353099822998047, 0.0, 0)
     b = Vec3(0.0, 8.537099794497102, 0)
@@ -352,22 +353,6 @@ end
         tries += 1
     end
     return angle_sets
-end
-
-@export function state_ledger(dio::Diorama)
-    state = singleton(dio, VisualizationSettings).state_on_display
-    l = Ledger(Stage(:E_basic, [EtotCalculator(), E_Dipole(), E_Gd_easy4th()]),
-               Stage(:E_all, [E_Gd_H(), E_L_H(), E_LL(), E_L_easy(), E_Gd_easy(), E_Gd_L(), E_Gd_easy4th(), E_Pb()]))::Ledger
-    dio_H         = singleton(dio, H)
-
-    for e in @entities_in(dio_states)
-        if dio_states[e].state == state
-            Entity(l, dio[e]...)
-        end
-    end
-
-    Entity(l, dio_H) 
-    return l
 end
 
 @export function generate_Hsweep_states(l::Ledger, Hϕ, Hrange)
@@ -456,38 +441,43 @@ end
 
 "Calculates the energy barriers for a set of sweep states (full cycle) between start_H and stop_H, performing NEB with stiffness c" 
 @export function energy_barriers(sweep_ledgers, start_H, stop_H, c, n_interpolations=10)
+
     path_ranges = find_path_ranges(sweep_ledgers, start_H, stop_H)
     for r in path_ranges
         sweep_ledgers[first(r)][H].data[1] = H(magnitude=start_H, sweep_ledgers[first(r)][H].data[1])
-        optimize(sweep_ledgers[first(r)], Spin, L)
+        optimize(sweep_ledgers[first(r)], Spin, L, Pb)
         sweep_ledgers[last(r)][H].data[1] = H(magnitude=stop_H, sweep_ledgers[first(r)][H].data[1])
-        optimize(sweep_ledgers[last(r)], Spin, L)
+        optimize(sweep_ledgers[last(r)], Spin, L, Pb)
     end
     barrier_ledgers = neb_barrier_ledgers(sweep_ledgers, path_ranges, c, n_interpolations)
     return [getfield.(calc_etot.(ls, :E_all), :e) for ls in barrier_ledgers], H_magnitudes(sweep_ledgers[path_ranges[1]])
 end
 
-"Calculates the energy barriers for a set of sweep states (full cycle) between start_H and stop_H, performing NEB with stiffness c" 
-@export function energy_barriers_new(sweep_segments, c, n_interpolations=10)
-    @assert all(x -> length(x) == length(sweep_segments[1]), sweep_segments) "Sweep segments don't have the same length"
-    # Hmags = H_magnitudes(sweep_ledgers)
-    energies = [Float64[] for i = 1:length(sweep_segments[1])-1]
-    for is = 1:length(sweep_segments)-1
-        for i = 1:length(sweep_segments[is])-1
-            ledgers_to_interpolate = [sort(sweep_segments[is], by=x->singleton(x, H).magnitude)[i:end]..., reverse(sort(sweep_segments[is+1], by=x->singleton(x, H).magnitude))[1:end-(i-1)]...] 
-            set_angles!(ledgers_to_interpolate[1], optimize(ledgers_to_interpolate[1], Spin, L).minimizer)
-            set_angles!(ledgers_to_interpolate[end], optimize(ledgers_to_interpolate[end], Spin, L).minimizer)
-            ledgers_to_neb = smart_interpolate_states(ledgers_to_interpolate, n_interpolations)
-            for l in ledgers_to_neb
-                l[H].data[1] = singleton(ledgers_to_neb[1], H)
-            end
-            nebbed_ledgers = neb(ledgers_to_neb, c)
-            nebbed_ledgers = neb(nebbed_ledgers, c/2)
-            append!(energies[i], getfield.(calc_etot.(nebbed_ledgers), :e))
-        end
-    end
-    return energies
-end
+# "Calculates the energy barriers for a set of sweep states (full cycle) between start_H and stop_H, performing NEB with stiffness c" 
+# @export function energy_barriers_new(sweep_ledgers, c, n_interpolations=10)
+#     Hstart, Hstop = find_hysteresis(sweep_ledgers)
+#     path_ranges = find_path_ranges(sweep_ledgers, Hstart, Hstop)
+#     sweep_segments = map(x -> sweep_ledgers[x], path_ranges)
+    
+#     @assert all(x -> length(x) == length(sweep_segments[1]), sweep_segments) "Sweep segments don't have the same length"
+#     # Hmags = H_magnitudes(sweep_ledgers)
+#     energies = [Float64[] for i = 1:length(sweep_segments[1])-1]
+#     for is = 1:length(sweep_segments)-1
+#         for i = 1:length(sweep_segments[is])-1
+#             ledgers_to_interpolate = [sort(sweep_segments[is], by=x->singleton(x, H).magnitude)[i:end]..., reverse(sort(sweep_segments[is+1], by=x->singleton(x, H).magnitude))[1:end-(i-1)]...] 
+#             set_optim_values!(ledgers_to_interpolate[1], optimize(ledgers_to_interpolate[1], Spin, L, Pb).minimizer)
+#             set_optim_values!(ledgers_to_interpolate[end], optimize(ledgers_to_interpolate[end], Spin, L, Pb).minimizer)
+#             ledgers_to_neb = smart_interpolate_states(ledgers_to_interpolate, n_interpolations)
+#             for l in ledgers_to_neb
+#                 l[H].data[1] = singleton(ledgers_to_neb[1], H)
+#             end
+#             nebbed_ledgers = neb(ledgers_to_neb, c)
+#             nebbed_ledgers = neb(nebbed_ledgers, c/2)
+#             append!(energies[i], getfield.(calc_etot.(nebbed_ledgers), :e))
+#         end
+#     end
+#     return energies
+# end
 
 """
     smart_interpolate_states(ledgers, n)
@@ -507,7 +497,7 @@ function smart_interpolate_states(ledgers, n)
         l1 = out_ledgers[interval]
         l2 = out_ledgers[interval+1]
         l_to_add = deepcopy(l1)
-        set_all_angles!(l_to_add, (all_angles(l1) .+ all_angles(l2))./2)
+        set_optim_values!(l_to_add, (all_angles(l1) .+ all_angles(l2))./2)
         insert!(out_ledgers, interval + 1, l_to_add)
         interval += 2
         n_to_add -= 1

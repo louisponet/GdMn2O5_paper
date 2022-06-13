@@ -9,12 +9,12 @@ module GdMn2O5
     using BlackBoxOptim
     using Unitful
     using Unitful: eV, μ0, μB, Å
-    @reexport using Glimpse
     using DataFrames
     using MuladdMacro
-    const Gl = Glimpse
     using FileIO
     using Parameters
+    using ProgressMeter
+    using Requires
  
     const Vec2 = SVector{2, Float64}
     Vec2(x::Number) = Vec2(x, x)
@@ -32,7 +32,6 @@ module GdMn2O5
     
     include("systems.jl")
     include("energies.jl")
-    include("visualization.jl")
     include("ledger.jl")
     include("optimize.jl")
     include("plotting.jl")
@@ -68,4 +67,8 @@ module GdMn2O5
             return 0.5
         end
     end
+    function __init__()
+        @require Glimpse="f6e19d58-12a4-5927-8606-ac30a9ce9b69" include("visualization.jl")
+    end
+
 end

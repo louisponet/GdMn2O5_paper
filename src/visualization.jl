@@ -1,3 +1,23 @@
+using .Glimpse
+const Gl = Glimpse
+
+@export function state_ledger(dio::Diorama)
+    state = singleton(dio, VisualizationSettings).state_on_display
+    l = Ledger(Stage(:E_basic, [EtotCalculator(), E_Dipole(), E_Gd_easy4th()]),
+               Stage(:E_all, [E_Gd_H(), E_L_H(), E_LL(), E_L_easy(), E_Gd_easy(), E_Gd_L(), E_Gd_easy4th(), E_Pb()]))::Ledger
+    dio_H         = singleton(dio, H)
+
+    for e in @entities_in(dio_states)
+        if dio_states[e].state == state
+            Entity(l, dio[e]...)
+        end
+    end
+
+    Entity(l, dio_H) 
+    return l
+end
+
+
 @component @with_kw mutable struct VisualizationSettings
     show_Gd_sphere = true
     show_Gd_arrow = true
